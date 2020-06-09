@@ -1,26 +1,27 @@
 from sys import argv
 import networkx as nx
+import time
 import matplotlib.pyplot as plt
 import random
 
 
 def check_overlap(seq: str, seq2: str):
     init_overlap = len(seq)
-    for i in range(len(seq2)):
-        if seq.endswith(seq2[:init_overlap]):
-            return init_overlap
-        init_overlap -= 1
-    
-    return init_overlap
+    for i in reversed(range(1, len(seq2))):
+        if seq.endswith(seq2[:i]):
+            return i
+    return 0
+
 
 
 def getSuccessor(graph, node):
     successors = graph.successors(node)
     sortedSuccessors = list(sorted(successors, key=lambda x: -graph[node][x]['weight']))
     mappedSuccessors = list(map(lambda x: (x, graph[node][x]['weight']), sortedSuccessors))
-    filteredSuccessors = list(filter(lambda x: x[1] == mappedSuccessors[0][1], mappedSuccessors))
+    # filteredSuccessors = list(filter(lambda x: x[1] == mappedSuccessors[0][1], mappedSuccessors))
     
-    return filteredSuccessors
+    return mappedSuccessors
+
 
 def getSuccessorV2(graph, node):
     successors = graph.successors(node)
@@ -83,7 +84,9 @@ if __name__ == "__main__":
         for i in spectrum:
             print(i.upper())
         exit(0)
+
     
+    start = time.time()
     # Create a graph, each node is a one k-gram
     content = []
     with open(argv[1]) as file:
@@ -91,133 +94,221 @@ if __name__ == "__main__":
     graph = nx.DiGraph()
     graph.add_nodes_from(content)
     
-    
+    edges = 0
     # Graph creation loop
-    gCopy = graph.copy()
-    limit = 1
-    flag = False
-    while (True):
-        # Create edges if overlap is bigger than limit
-        edges = []
-        for seq in content:
+    for seq in content:
             content2 = content[:]
             content2.remove(seq)
             for seq2 in content2:
-                if ((overlap_count := check_overlap(seq, seq2)) > limit):
-                    edges.append([seq, seq2])
+                if ((overlap_count := check_overlap(seq, seq2)) > 0 ):
                     graph.add_edge(seq, seq2, weight = overlap_count)
-        
-        # Check if there is a node without a edge
-        for n in graph.nodes():
-            # If yes restore graph from copy and break the loop
-            if len(list(graph.neighbors(n))) < 1:
-                graph = gCopy
-                flag = True
-                break
-        
-        # Break the loop
-        if (flag):
+                    edges += 1
+
+
+    # Pruning the graph
+    removedEdges = 0
+    for n in graph.nodes():
+        friends = graph.successors(n)
+        maxWeight = 0
+        for f in friends:
+            currentWeight = graph[n][f]['weight']
+            if currentWeight > maxWeight:
+                maxWeight = currentWeight
+
+        friends = graph.successors(n)
+        edgesToRemove = []
+        for f in friends:
+            currentWeight = graph[n][f]['weight']
+            if (currentWeight < maxWeight):
+                removedEdges += 1
+                edgesToRemove.append((n, f))
+        graph.remove_edges_from(edgesToRemove)
+
+    # print(edges, removedEdges, edges-removedEdges)
+
+    eachNodeResults = []
+    for n2 in graph.nodes():
+        ourStack = []
+        results = []
+
+        path2 = [n2]
+        iterWeight = 0
+        iterEdges = 0
+       
+        #tuple = successor, weight
+        futureSuccessors = getSuccessor(graph, n2)
+        if len(futureSuccessors) < 1:
             break
-
-        # If there isn't such a node, increase limit and save current graph then clear edges from it
-        limit += 1
-        gCopy = graph.copy()
-        graph.remove_edges_from(edges)
-
-    
-    # Search for best path part
-    maxWeight = 0
-    maxResult = ""
-    maxEdgeCount = 0
-    maxResultLength = 0
-    path = []
-    # TODO: check what happends if you try dfs, maybe it will work???
-    for node in graph.nodes():
-        print(nx.dfs_successors(graph, node))
-        path = [node]
-        edgeCount = 0
-        weight = 0
-        # Get the successor with the best overlap
-        succList = getSuccessor(graph, node)
-        nextWeight = 0
-        # if len(succList ) > 1:
-        #     for succ in succList:
-        #         succc = getSuccessor(graph, succ[0])
-        #         if succc[0][1] > nextWeight:
-        #             nextWeight = succ[1]
-        #             nextNode = succ[0]
-        # else:
-        nextNode = succList[0][0]
-        nextWeight = succList[0][1]
-        # print(succList)
-        # nextNode = succList[0][0]
-        # nextWeight = succList[0][1]
-        # print(path, nextNode)
-
-        # Starting from the successor add successors with the best overlap to the path
-        # End when we have come through a cycle, each time increase weight and edgeCount
-        while (nextNode not in path):
-            # print("in while")
-            path.append(nextNode)
-            # print(nextNode)
-            edgeCount += 1
-            weight += nextWeight
-            # succList = getSuccessor(graph, nextNode)
-            succList = getSuccessor(graph, nextNode)
-            nextWeight = 0
-            # if len(succList ) > 1:
-            #     for succ in succList:
-            #         succc = getSuccessor(graph, succ[0])
-            #         if succc[0][1] > nextWeight:
-            #             nextWeight = succ[1]
-            #             nextNode = succ[0]
-            # else:
-            nextNode = succList[0][0]
-            nextWeight = succList[0][1]
-            # bestNextNode = succList[0][0]
-            # nextWeight = succList[0][1]
-            # nextNode = bestNextNode
+        chosen = futureSuccessors[0]
+        futureSuccessors.pop(0)
+        for successor in futureSuccessors:
+            ourStack.append({"node": successor, "weight": iterWeight, "edges": iterEdges, "path":path2})
         
-        # Walk through the path and concatenate k-mers to create a full sequence
+        # pseudo Do While start
+        while (len(list(graph.successors(chosen[0]))) > 0 and chosen[0] not in path2):
+            # Add good successor to path
+            path2.append(chosen[0])
+            iterWeight += chosen[1]
+            iterEdges += 1
+
+            # Check successor, forks and add to stack
+            futureSuccessors = getSuccessor(graph, chosen[0]) 
+            if len(futureSuccessors) < 1:
+                break
+            chosen = futureSuccessors[0]
+            futureSuccessors.pop(0)
+            for successor in futureSuccessors:
+                # print("Succ:", successor)
+                ourStack.append({"node": successor, "weight": iterWeight, "edges": iterEdges, "path":path2})
+
+        # Add to results array
+        results.append([path2, iterWeight, iterEdges])
+
+        while (ourStack):
+            # Get state from stack and fill out things
+            chosenState = ourStack[-1]
+            ourStack.pop(-1)
+            path2 = chosenState["path"]
+            iterWeight = chosenState["weight"]
+            iterEdges = chosenState["edges"]
+            chosen = chosenState["node"]
+            # print(ourStack)
+
+            while (len(list(graph.successors(chosen[0]))) > 0 and chosen[0] not in path2):
+                # Add good successor to path
+                path2.append(chosen[0])
+                iterWeight += chosen[1]
+                iterEdges += 1
+
+                # Check successor, forks and add to stack
+                futureSuccessors = getSuccessor(graph, chosen[0]) 
+                if len(futureSuccessors) < 1:
+                    break
+                chosen = futureSuccessors[0]
+                futureSuccessors.pop(0)
+                for successor in futureSuccessors:
+                    ourStack.append({"node": successor, "weight": iterWeight, "edges": iterEdges, "path":path2})
+
+            results.append([path2, iterWeight, iterEdges])
+        # pseudo Do while end
+    
+        # Sum up results pick the best one go with the next iteration
+        rpath = []
+        rweight = 0
+        redges = 0
+        for r in results:
+            if r[1] > rweight:
+                rpath = r[0]
+                rweight = r[1]
+                redges = r[2]
+        
+        eachNodeResults.append([rpath, rweight, redges])
+
+    # print(list(sorted(eachNodeResults, key=lambda x: x[1])))
+    for j in reversed(list(sorted(eachNodeResults, key=lambda x: x[1]))):
+        path = j[0]
         result = ""
         for i, node in enumerate(path):
             if i == 0:
                 result = node
-                #print("Begin =", node)
             else:
                 overlapSlice = check_overlap(path[i-1], node)
                 result += node[ overlapSlice :]
-                #print("Do dodania = {z} ,do uciecia = {x}, po ucieciu = {y}, wynik = {q}".format(x=node[0:overlapSlice], y=node[overlapSlice:], z=path[i-1], q=result))
-        print(weight, "\t", edgeCount, "\t", len(result), "\t", result)
-        #print(len(result))
+        print("Weight", "\t", "Edges", "\t", "Length", "\t", "Sequence")
+        print(j[1], "\t", j[2], "\t", len(result), "\t", result)
+        break
 
-        # The best solution will have most edges traversed and biggest weight
-        if (edgeCount >= maxEdgeCount):
-            if (weight > maxWeight):
-                maxEdgeCount = edgeCount
-                maxWeight = weight
-                maxResult = result
-                maxResultLength = len(maxResult)
+    stop = time.time()
+    print("Execution time:", str((stop - start)*1000) + "ms\n")
+
+
+    # Search for best path part
+    # maxWeight = 0
+    # maxResult = ""
+    # maxEdgeCount = 0
+    # maxResultLength = 0
+    # path = []
+    # # TODO: check what happends if you try dfs, maybe it will work???
+    # for node in graph.nodes():
+    #     path = [node]
+    #     edgeCount = 0
+    #     weight = 0
+    #     # Get the successor with the best overlap
+    #     succList = getSuccessor(graph, node)
+    #     nextWeight = 0
+    #     nextNode = succList[0][0]
+    #     nextWeight = succList[0][1]
+
+    #     # Starting from the successor add successors with the best overlap to the path
+    #     # End when we have come through a cycle, each time increase weight and edgeCount
+    #     lastBranch = None
+    #     # a List of Lists containing []
+    #     prevBranchStack = list()
+    #     prevBranchWeight = 0
+    #     # If there were more successors, for each successor append it to the list
+    #     # together with weight value and edge count it had at that moment
+    #     if len(succList) > 1:
+    #         for i in succList[1:]:
+    #             prevBranchStack.append({"node":i[0], "weight":i[1], "edgeCount":1})
+
+    #     while (nextNode not in path and prevBranchStack == []):
+    #         if nextNode in path:
+    #             # to cofnij jestli jest prevBranch
+    #             pass                
+    #         path.append(nextNode)
+    #         edgeCount += 1
+    #         weight += nextWeight
+    #         succList = getSuccessor(graph, nextNode)
+    #         if len(succList) > 1:
+    #             for i in succList[1:]:
+    #                 prevBranchStack.append({"node":i[0], "weight":weight, "edgeCount":edgeCount})
+    #         # if (succList[0][0] in path and len(succList) > 1):
+    #         #     succList.pop(0)
+           
+    #         nextWeight = 0
+    #         nextNode = succList[0][0]
+    #         nextWeight = succList[0][1]
+        
+
+    #     print("nextNode Analysis: ", nextNode, list(graph.successors(path[-1])), [i in path for i in list(graph.successors(path[-1]))])
+        
+    #     # Walk through the path and concatenate k-mers to create a full sequence
+    #     result = ""
+    #     for i, node in enumerate(path):
+    #         if i == 0:
+    #             result = node
+    #         else:
+    #             overlapSlice = check_overlap(path[i-1], node)
+    #             result += node[ overlapSlice :]
+    #     print(weight, "\t", edgeCount, "\t", len(result), "\t", result)
+
+    #     # The best solution will have most edges traversed and biggest weight
+    #     if (edgeCount >= maxEdgeCount):
+    #         if (weight > maxWeight):
+    #             maxEdgeCount = edgeCount
+    #             maxWeight = weight
+    #             maxResult = result
+    #             maxResultLength = len(maxResult)
     
-    # Print out the best result
-    print(maxResultLength, maxResult, maxEdgeCount)
+    # # Print out the best result
+    # print(maxResultLength, maxResult, maxEdgeCount)
 
    
-    red_edges = list(filter(lambda x: x[2] > 8, graph.edges(data='weight')))
-    black_edges = list(filter(lambda x: x[2] <= 7, graph.edges(data='weight')))
-    path_edges = []
-    for i in range(len(path)-1):
-        path_edges.append((path[i], path[i+1]))
-    blue_edges = path_edges
-    edge_labels = dict([((u, v,), d['weight']) for u, v, d in filter(lambda x: (x[0], x[1]) in path_edges, graph.edges(data=True))])
+    # red_edges = list(filter(lambda x: x[2] > 0, graph.edges(data='weight')))
+    # #black_edges = list(filter(lambda x: x[2] <= 7, graph.edges(data='weight')))
+    # path_edges = []
+    # for i in range(len(path)-1):
+    #     path_edges.append((path[i], path[i+1]))
+    # blue_edges = path_edges
+    # edge_labels = dict([((u, v,), d['weight']) for u, v, d in filter(lambda x: (x[0], x[1]) in path_edges, graph.edges(data=True))])
 
-    pos = nx.spring_layout(graph)
-    nx.draw_networkx_nodes(graph, pos, cmap=plt.get_cmap('jet'), node_size = 500)
-    nx.draw_networkx_labels(graph, pos)
-    nx.draw_networkx_edges(graph, pos, edgelist=red_edges, edge_color='r', arrows=True)
-    nx.draw_networkx_edges(graph, pos, edgelist=blue_edges[0:1], edge_color='g', arrows=True)
-    nx.draw_networkx_edges(graph, pos, edgelist=blue_edges[1:], edge_color='b', arrows=True)
-    nx.draw_networkx_edge_labels(graph, pos, edge_labels=edge_labels)
-    plt.show()
+    # pos = nx.spring_layout(graph)
+    # nx.draw_networkx_nodes(graph, pos, cmap=plt.get_cmap('jet'), node_size = 500)
+    # nx.draw_networkx_labels(graph, pos)
+    # nx.draw_networkx_edges(graph, pos, edgelist=red_edges, edge_color='r', arrows=True)
+    # nx.draw_networkx_edges(graph, pos, edgelist=blue_edges[0:4], edge_color='g', arrows=True)
+    # nx.draw_networkx_edges(graph, pos, edgelist=blue_edges[4:], edge_color='b', arrows=True)
+    # nx.draw_networkx_edge_labels(graph, pos, edge_labels=edge_labels)
+    # plt.show()
 
     graph.clear()
