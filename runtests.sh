@@ -1,10 +1,48 @@
-echo "" > $1
-for i in $(ls $2)
+RESULTFILE=""
+NUM=0
+SAVE=0
+VERBOSE=0
+
+for i in $@
 do
-    echo $i
-    echo $i >> $1
-    python main.py $2/$i >> $1
+    NUM=$(($NUM+1))
+    if [ $i == '-f' ]
+    then
+        SAVE=$(($NUM+1))
+    fi
+    if [ $NUM == $SAVE ]
+    then
+        RESULTFILE=$i
+    fi
+    if [ $i == '-v' ]
+    then
+        VERBOSE=1
+        SAVE=$(($NUM))
+    fi
 done
-# uncomment to print to file $3 in format:
-# fileName sequenceLength \n
-# cat $1 | awk '$1 ~ /^[0-9]+$/ {print nazwa_pliku, $3} $1 ~ /txt$/ {nazwa_pliku = $1}' > $3
+
+if (($VERBOSE == 1))
+then
+    echo "Running tests for $(($NUM - $SAVE)) files"
+fi
+
+NUM=0
+echo "" > $RESULTFILE
+
+for i in $@
+do
+    NUM=$(($NUM+1))
+    if (($NUM > $SAVE))
+    then
+        if (($VERBOSE == 1))
+        then
+            echo $i
+        fi
+        python main.py $i >> $RESULTFILE
+    fi
+done
+
+if (($VERBOSE == 1))
+then
+    echo "Results saved to $RESULTFILE"
+fi

@@ -1,8 +1,12 @@
 from sys import argv
+from sys import stderr
 import networkx as nx
 import time
 import matplotlib.pyplot as plt
 import random
+from statistics import median
+import numpy as np
+import re
 
 
 def check_overlap(seq: str, seq2: str):
@@ -12,6 +16,185 @@ def check_overlap(seq: str, seq2: str):
             return i
     return 0
 
+
+def concatenatePath(path: list):
+    result = ""
+    for i, el in enumerate(path):
+        if i == 0:
+            result = el
+        else:
+            overlap = check_overlap(path[i-1], el)
+            result += el[overlap:]
+    return result
+
+
+def trimGraph(graph: nx.DiGraph, aboveTreshPercentage: float=0.8, percentileLower: int=50, percentileUpper: int=90):
+    """Prune the graph to reduce number of edges
+    
+    Keyword arguments:
+        aboveTreshPercentage -- Percent of average weights that won't be removed (default 0.8)
+        percentileLower -- Above this value edge may remain with aboveThreshPercentage chance (default 50)
+        percentileUpper -- Above this value edge is sure to remain (default 90)
+    """
+    removedEdges = 0
+    # This loop has O(n*(n+n)) = O(n^2)
+    for n in graph.nodes():
+        friends = graph.successors(n)
+
+        weights = []
+        for f in friends:
+            currentWeight = graph[n][f]['weight']
+            weights.append(currentWeight)
+        
+        limitWeightUpper = np.percentile(weights, percentileUpper)
+        limitWeightLower = np.percentile(weights, percentileLower)
+
+        # Create a list of edges to remove
+        friends = graph.successors(n)
+        edgesToRemove = []
+        initialFriends = len(list(friends))
+        friends = graph.successors(n)
+        for f in friends:
+            currentWeight = graph[n][f]['weight']
+            # If weight is below median remove it
+            if (currentWeight <= limitWeightLower and initialFriends > 1):
+                initialFriends -= 1
+                removedEdges += 1
+                edgesToRemove.append((n, f))
+            # Else if edge is above median but below sure threshold
+            # it has aboveThreshPercentage to not be removed
+            elif (currentWeight <= limitWeightUpper and initialFriends > 1):
+                chance = random.uniform(0, 1)
+                if (chance < aboveTreshPercentage):
+                    initialFriends -= 1
+                    removedEdges += 1
+                    edgesToRemove.append((n, f))
+            
+        # Execute order 66
+        graph.remove_edges_from(edgesToRemove)
+    
+    return removedEdges
+
+
+def heuristicSucc(graph: nx.DiGraph, optimalValue: int, maxLength: int, looseness: int = 0):
+
+    bestPath = []
+    bestLen = 0
+    for n in graph.nodes():
+        path = [n]
+        bestSucc = n
+        pathLen = len(path[0])
+        while (pathLen < maxLength and len(path) != optimalValue):
+            successors = getSuccessor(graph, bestSucc)
+            if len(successors) == 0:
+                break
+
+            # Find max weight
+            maxWeight = 0
+            for succW in successors:
+                currWeight = graph[bestSucc][succW[0]]['weight']
+                if currWeight > maxWeight:
+                    maxWeight = currWeight
+            
+            # Get successors close to max weight
+            succs = []
+            for succ in successors:
+                currWeight = graph[bestSucc][succ[0]]['weight']
+                if (currWeight >= maxWeight - looseness):
+                    succs.append(succ)
+            if len(succs) == 0:
+                break
+
+            bestSucc = ""
+            maxUniqueSuccs = 0
+            for succ in succs:
+                uniqueSuccs = 0
+                successorSuccessors = getSuccessor(graph, succ[0])
+                # print(successorSuccessors)
+                if len(successorSuccessors) == 0:
+                    continue
+
+                for succSuccs in successorSuccessors:
+                    if succSuccs[0] not in path:
+                        uniqueSuccs += 1
+
+                if uniqueSuccs >= maxUniqueSuccs:
+                    bestSucc = succ[0]
+                    maxUniqueSuccs = uniqueSuccs
+
+            pathLen += len(path[0]) - check_overlap(path[-1], bestSucc)
+            if pathLen > maxLength:
+                pathLen -= len(path[0]) - check_overlap(path[-1], bestSucc)
+                break
+            path.append(bestSucc)
+            # print("Unique succs:{0}".format(maxUniqueSuccs))
+        # print("\nNode:{0}\nPath:{1}\npathLen:{2}\nlen(path):{3}".format(n, path, pathLen, len(path)))
+        if len(set(path)) > bestLen:
+            bestPath = [*path]
+            bestLen = len(set(path))
+
+    return bestPath, bestLen, optimalValue - bestLen
+
+
+
+def heuristicSucc2(graph: nx.DiGraph, optimalValue: int, maxLength: int):
+
+    bestPath = []
+    bestLen = 0
+    for n in graph.nodes():
+        path = [n]
+        bestSucc = n
+        pathLen = len(path[0])
+        while (pathLen < maxLength and len(path) != optimalValue):
+            successors = getSuccessor(graph, bestSucc)
+            if len(successors) == 0:
+                break
+
+           
+            # bestSucc = ""
+            
+            bestUniqSuccs = dict()
+            for succ in successors:
+                uniqueSuccs = 0
+                successorSuccessors = getSuccessor(graph, succ[0])
+                # print(successorSuccessors)
+                if len(successorSuccessors) == 0:
+                    continue
+              
+                for succSuccs in successorSuccessors:
+                    if succSuccs[0] not in path:
+                        uniqueSuccs += 1
+
+                bestUniqSuccs[succ[0]] = uniqueSuccs
+            bestUniqSuccsSorted = [elem[0] for elem in sorted(bestUniqSuccs.items(), reverse=True, key=lambda x: x[1])][:3]
+
+            if len(bestUniqSuccsSorted) == 0:
+                break
+           
+            maxWeight = 0
+            nextBestSucc = ""
+            for succW in bestUniqSuccsSorted:
+                currWeight = graph[bestSucc][succW]['weight']
+                if currWeight > maxWeight:
+                    maxWeight = currWeight
+                    nextBestSucc = succW
+                    
+            bestSucc = nextBestSucc
+            
+
+            pathLen += len(path[0]) - check_overlap(path[-1], bestSucc)
+            if pathLen > maxLength:
+                pathLen -= len(path[0]) - check_overlap(path[-1], bestSucc)
+                break
+            path.append(bestSucc)
+            
+            # print("Unique succs:{0}".format(maxUniqueSuccs))
+        # print("\nNode:{0}\nPath:{1}\npathLen:{2}\nlen(path):{3}".format(n, path, pathLen, len(path)))
+        if len(set(path)) > bestLen:
+            bestPath = [*path]
+            bestLen = len(set(path))
+
+    return bestPath, bestLen, optimalValue - bestLen
 
 
 def getSuccessor(graph, node):
@@ -59,7 +242,14 @@ def getSuccessorV4(graph, node, butno = []):
     return sortedSuccessors[0], graph[node][sortedSuccessors[0]]['weight']
 
 
+def findBestSequence():
+    pass
+
+
 if __name__ == "__main__":
+
+    random.seed(time.time())
+    #random.seed(5)
     if (len(argv) < 2):
         print("If you want to recreate a sequence based on a spectrum of nucleotides:")
         print("Usage: " + argv[0] + " [filename]")
@@ -74,18 +264,63 @@ if __name__ == "__main__":
         with open(argv[1]) as file:
             sequence = file.read()
         arglen = int(argv[2])
-        deletecount = int(argv[3])
         for i in range(len(sequence) - arglen + 1):
             spectrum.append(sequence[i:i+arglen])
 
-        for i in range(deletecount):
-            spectrum.remove(random.choice(spectrum))
+        if "+" in argv[3]: # Add random
+            '''
+            modifycount = int(argv[3][1:])
+            added = 0
+            while (added != modifycount):
+                random_nuc = ""
+                for i in range(arglen):
+                    random_nuc += random.choice(["A","C","T","G"])
+                if random_nuc not in spectrum:
+                    spectrum.append(random_nuc)
+                    added += 1
+            '''
+            modifycount = int(argv[3][1:])
+            added = 0
+            while (added != modifycount):
+                random_nuc = ""
+                random_nuc = list(random.choice(spectrum))
+                randomElements = []
+                for index, x in enumerate(random_nuc):
+                    if random.randint(0, 1):
+                        y = x
+                        while(y == x):
+                            y = random.choice(['A', 'C', 'T', 'G'])
+                        random_nuc[index] = y
+                random_nuc = "".join(random_nuc)
+                if random_nuc not in spectrum:
+                    spectrum.append(random_nuc)
+                    added += 1
+        else: # Delete random
+            modifycount = int(argv[3])
+
+            for i in range(modifycount):
+                spectrum.remove(random.choice(spectrum))
+
         random.shuffle(spectrum)
+        print(len(set(spectrum)), "==", len(spectrum), file=stderr)
         for i in spectrum:
             print(i.upper())
         exit(0)
 
+
     
+
+    txt = argv[1]
+    pattern = re.compile(".*\.(?P<numberix>[0-9]+)[+-](?P<extraSize>[0-9]+).*") 
+    match = re.findall(pattern, txt)
+    instanceSize = 0
+    extraSize = 0
+    # print(match)
+    if match != None:
+        instanceSize = int(match[0][0])
+        extraSize = int(match[0][1])
+    # print(instanceSize) [('200', '8')]
+
     start = time.time()
     # Create a graph, each node is a one k-gram
     content = []
@@ -93,6 +328,15 @@ if __name__ == "__main__":
         content = file.read().split('\n')[:-1]
     graph = nx.DiGraph()
     graph.add_nodes_from(content)
+
+    maxPossibleLength = instanceSize + len(content[0]) - 1
+    if "-" in argv[1]:
+        extraSize = -extraSize
+    else:
+        extraSize = 0
+    optimalWordsCount = instanceSize + extraSize
+
+    # print("MAXLEN:", maxPossibleLength, "\nOPT:", optimalWordsCount, "\nFILE:", argv[1])
     
     edges = 0
     # Graph creation loop
@@ -100,215 +344,53 @@ if __name__ == "__main__":
             content2 = content[:]
             content2.remove(seq)
             for seq2 in content2:
-                if ((overlap_count := check_overlap(seq, seq2)) > 0 ):
+                if ((overlap_count := check_overlap(seq, seq2)) > 1 ):
                     graph.add_edge(seq, seq2, weight = overlap_count)
                     edges += 1
 
 
     # Pruning the graph
-    removedEdges = 0
-    for n in graph.nodes():
-        friends = graph.successors(n)
-        maxWeight = 0
-        for f in friends:
-            currentWeight = graph[n][f]['weight']
-            if currentWeight > maxWeight:
-                maxWeight = currentWeight
-
-        friends = graph.successors(n)
-        edgesToRemove = []
-        for f in friends:
-            currentWeight = graph[n][f]['weight']
-            if (currentWeight < maxWeight):
-                removedEdges += 1
-                edgesToRemove.append((n, f))
-        graph.remove_edges_from(edgesToRemove)
-
+    removedEdges = trimGraph(graph, aboveTreshPercentage=0.8, percentileLower=50, percentileUpper=90)
+    
     # print(edges, removedEdges, edges-removedEdges)
 
-    eachNodeResults = []
-    for n2 in graph.nodes():
-        ourStack = []
-        results = []
+    # Jak chodzimy:
+    # 1. Po najlepszych wagach
+    # 2. Po najlepszych następnikach
+    #    - Najlepsza średnia wag u następnika
+    #    - Najlepsza waga u następnika
+    #    - Najwięcej następników u następnika
+    #    - Najwięcej następników których jeszcze nie było
+    # Jak długo chodzimy:
+    # 1. Aż nie ma pętli
+    # 2. Aż nie przekroczymy maksymalnej długości
+    # 3. Aż nie osiągniemy OPT unikatowych wierzchołków
 
-        path2 = [n2]
-        iterWeight = 0
-        iterEdges = 0
-       
-        #tuple = successor, weight
-        futureSuccessors = getSuccessor(graph, n2)
-        if len(futureSuccessors) < 1:
-            break
-        chosen = futureSuccessors[0]
-        futureSuccessors.pop(0)
-        for successor in futureSuccessors:
-            ourStack.append({"node": successor, "weight": iterWeight, "edges": iterEdges, "path":path2})
-        
-        # pseudo Do While start
-        while (len(list(graph.successors(chosen[0]))) > 0 and chosen[0] not in path2):
-            # Add good successor to path
-            path2.append(chosen[0])
-            iterWeight += chosen[1]
-            iterEdges += 1
+    # Plan:
+    # Dla każdego wierzchołka:
+    #     dodajemy wierzchołek do ścieżki
+    #     idziemy do następnego wierchołka (2.4)
+    #     wracamy do: dodajemy wierzchołek do ścieżki aż (2., 3.)
+    #     zapisujemy wynik
+    # Porównujemy wyniki bierzemy najbliższy od OPT
+    # Print: Czas, odległość od OPT, Sekwencja
 
-            # Check successor, forks and add to stack
-            futureSuccessors = getSuccessor(graph, chosen[0]) 
-            if len(futureSuccessors) < 1:
-                break
-            chosen = futureSuccessors[0]
-            futureSuccessors.pop(0)
-            for successor in futureSuccessors:
-                # print("Succ:", successor)
-                ourStack.append({"node": successor, "weight": iterWeight, "edges": iterEdges, "path":path2})
-
-        # Add to results array
-        results.append([path2, iterWeight, iterEdges])
-
-        while (ourStack):
-            # Get state from stack and fill out things
-            chosenState = ourStack[-1]
-            ourStack.pop(-1)
-            path2 = chosenState["path"]
-            iterWeight = chosenState["weight"]
-            iterEdges = chosenState["edges"]
-            chosen = chosenState["node"]
-            # print(ourStack)
-
-            while (len(list(graph.successors(chosen[0]))) > 0 and chosen[0] not in path2):
-                # Add good successor to path
-                path2.append(chosen[0])
-                iterWeight += chosen[1]
-                iterEdges += 1
-
-                # Check successor, forks and add to stack
-                futureSuccessors = getSuccessor(graph, chosen[0]) 
-                if len(futureSuccessors) < 1:
-                    break
-                chosen = futureSuccessors[0]
-                futureSuccessors.pop(0)
-                for successor in futureSuccessors:
-                    ourStack.append({"node": successor, "weight": iterWeight, "edges": iterEdges, "path":path2})
-
-            results.append([path2, iterWeight, iterEdges])
-        # pseudo Do while end
-    
-        # Sum up results pick the best one go with the next iteration
-        rpath = []
-        rweight = 0
-        redges = 0
-        for r in results:
-            if r[1] > rweight:
-                rpath = r[0]
-                rweight = r[1]
-                redges = r[2]
-        
-        eachNodeResults.append([rpath, rweight, redges])
-
-    # print(list(sorted(eachNodeResults, key=lambda x: x[1])))
-    for j in reversed(list(sorted(eachNodeResults, key=lambda x: x[1]))):
-        path = j[0]
-        result = ""
-        for i, node in enumerate(path):
-            if i == 0:
-                result = node
-            else:
-                overlapSlice = check_overlap(path[i-1], node)
-                result += node[ overlapSlice :]
-        print("Weight", "\t", "Edges", "\t", "Length", "\t", "Sequence")
-        print(j[1], "\t", j[2], "\t", len(result), "\t", result)
-        break
+    bestPath, bestLen, distFromOpt = heuristicSucc(graph, optimalWordsCount, maxPossibleLength, 0)
+    print(
+"--------\n\
+Filename: {file}\n\
+OptLen = {oL} BestLen = {bL} DistFromOpt = {dFO}\n\
+Best = {b}\n\
+BestPathLen = {bPL}/{mPL}".format(
+          file=argv[1],
+          oL=optimalWordsCount,
+          bL=bestLen,
+          dFO=distFromOpt,
+          b=bestPath,
+          bPL=len(concatenatePath(bestPath)),
+          mPL=maxPossibleLength))
 
     stop = time.time()
-    print("Execution time:", str((stop - start)*1000) + "ms\n")
-
-
-    # Search for best path part
-    # maxWeight = 0
-    # maxResult = ""
-    # maxEdgeCount = 0
-    # maxResultLength = 0
-    # path = []
-    # # TODO: check what happends if you try dfs, maybe it will work???
-    # for node in graph.nodes():
-    #     path = [node]
-    #     edgeCount = 0
-    #     weight = 0
-    #     # Get the successor with the best overlap
-    #     succList = getSuccessor(graph, node)
-    #     nextWeight = 0
-    #     nextNode = succList[0][0]
-    #     nextWeight = succList[0][1]
-
-    #     # Starting from the successor add successors with the best overlap to the path
-    #     # End when we have come through a cycle, each time increase weight and edgeCount
-    #     lastBranch = None
-    #     # a List of Lists containing []
-    #     prevBranchStack = list()
-    #     prevBranchWeight = 0
-    #     # If there were more successors, for each successor append it to the list
-    #     # together with weight value and edge count it had at that moment
-    #     if len(succList) > 1:
-    #         for i in succList[1:]:
-    #             prevBranchStack.append({"node":i[0], "weight":i[1], "edgeCount":1})
-
-    #     while (nextNode not in path and prevBranchStack == []):
-    #         if nextNode in path:
-    #             # to cofnij jestli jest prevBranch
-    #             pass                
-    #         path.append(nextNode)
-    #         edgeCount += 1
-    #         weight += nextWeight
-    #         succList = getSuccessor(graph, nextNode)
-    #         if len(succList) > 1:
-    #             for i in succList[1:]:
-    #                 prevBranchStack.append({"node":i[0], "weight":weight, "edgeCount":edgeCount})
-    #         # if (succList[0][0] in path and len(succList) > 1):
-    #         #     succList.pop(0)
-           
-    #         nextWeight = 0
-    #         nextNode = succList[0][0]
-    #         nextWeight = succList[0][1]
-        
-
-    #     print("nextNode Analysis: ", nextNode, list(graph.successors(path[-1])), [i in path for i in list(graph.successors(path[-1]))])
-        
-    #     # Walk through the path and concatenate k-mers to create a full sequence
-    #     result = ""
-    #     for i, node in enumerate(path):
-    #         if i == 0:
-    #             result = node
-    #         else:
-    #             overlapSlice = check_overlap(path[i-1], node)
-    #             result += node[ overlapSlice :]
-    #     print(weight, "\t", edgeCount, "\t", len(result), "\t", result)
-
-    #     # The best solution will have most edges traversed and biggest weight
-    #     if (edgeCount >= maxEdgeCount):
-    #         if (weight > maxWeight):
-    #             maxEdgeCount = edgeCount
-    #             maxWeight = weight
-    #             maxResult = result
-    #             maxResultLength = len(maxResult)
-    
-    # # Print out the best result
-    # print(maxResultLength, maxResult, maxEdgeCount)
-
-   
-    # red_edges = list(filter(lambda x: x[2] > 0, graph.edges(data='weight')))
-    # #black_edges = list(filter(lambda x: x[2] <= 7, graph.edges(data='weight')))
-    # path_edges = []
-    # for i in range(len(path)-1):
-    #     path_edges.append((path[i], path[i+1]))
-    # blue_edges = path_edges
-    # edge_labels = dict([((u, v,), d['weight']) for u, v, d in filter(lambda x: (x[0], x[1]) in path_edges, graph.edges(data=True))])
-
-    # pos = nx.spring_layout(graph)
-    # nx.draw_networkx_nodes(graph, pos, cmap=plt.get_cmap('jet'), node_size = 500)
-    # nx.draw_networkx_labels(graph, pos)
-    # nx.draw_networkx_edges(graph, pos, edgelist=red_edges, edge_color='r', arrows=True)
-    # nx.draw_networkx_edges(graph, pos, edgelist=blue_edges[0:4], edge_color='g', arrows=True)
-    # nx.draw_networkx_edges(graph, pos, edgelist=blue_edges[4:], edge_color='b', arrows=True)
-    # nx.draw_networkx_edge_labels(graph, pos, edge_labels=edge_labels)
-    # plt.show()
+    print("Execution time:", str((stop - start)*1000) + "ms\n--------\n")
 
     graph.clear()
